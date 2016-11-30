@@ -15,8 +15,12 @@
 package com.google.api.client.util;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Type;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.WeakHashMap;
 
@@ -94,7 +98,11 @@ public class FieldInfo {
             return null;
           }
           fieldName = key.value();
-          field.setAccessible(true);
+          try {
+            field.setAccessible(true);
+          } catch (SecurityException e) {
+            // just continue
+          }
         }
         if ("##default".equals(fieldName)) {
           fieldName = field.getName();
@@ -220,6 +228,13 @@ public class FieldInfo {
    * Returns the value of the given field in the given object instance using reflection.
    */
   public static Object getFieldValue(Field field, Object obj) {
+    if (!field.isAccessible()) {
+      try {
+        return getRestrictedFieldValue(field, obj);
+      } catch (Exception e) {
+        // just continue
+      }
+    }
     try {
       return field.get(obj);
     } catch (IllegalAccessException e) {
@@ -241,6 +256,14 @@ public class FieldInfo {
                 + field.getName() + " field in " + obj.getClass().getName());
       }
     } else {
+      if (!field.isAccessible()) {
+        try {
+          setRestrictedFieldValue(field, obj, value);
+          return;
+        } catch (Exception e) {
+          // just continue
+        }
+      }
       try {
         field.set(obj, value);
       } catch (SecurityException e) {
@@ -249,5 +272,46 @@ public class FieldInfo {
         throw new IllegalArgumentException(e);
       }
     }
+  }
+
+  private static Object getRestrictedFieldValue(Field field, Object obj)
+      throws NoSuchMethodException {
+    for (Method m : getMethods(field, obj, "get")) {
+      try {
+        return m.invoke(obj);
+      } catch (Exception e) {
+        // continue trying other methods
+      }
+    }
+    throw new NoSuchMethodException();
+  }
+
+  private static Object setRestrictedFieldValue(Field field, Object obj, Object value)
+      throws NoSuchMethodException {
+    for (Method m : getMethods(field, obj, "set")) {
+      try {
+        if (value instanceof Collection && ((Collection) value).size() == 0 &&
+            m.getParameterTypes().length == 1 &&
+            !Collection.class.isAssignableFrom(m.getParameterTypes()[0])) {
+          return m.invoke(obj, new Object[]{null});
+        } else {
+          return m.invoke(obj, value);
+        }
+      } catch (Exception e) {
+        // continue trying other methods
+      }
+    }
+    throw new NoSuchMethodException();
+  }
+
+  private static List<Method> getMethods(Field field, Object obj, String prefix) {
+    List<Method> methods = new ArrayList<Method>();
+    String methodName = prefix + field.getName();
+    for (Method method : obj.getClass().getMethods()) {
+      if (method.getName().compareToIgnoreCase(methodName) == 0) {
+        methods.add(method);
+      }
+    }
+    return methods;
   }
 }
