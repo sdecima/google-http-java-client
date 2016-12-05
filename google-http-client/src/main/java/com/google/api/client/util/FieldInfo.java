@@ -274,11 +274,21 @@ public class FieldInfo {
     }
   }
 
+  private static List newArrayList(Object element) {
+    ArrayList<Object> list = new ArrayList<Object>();
+    list.add(element);
+    return list;
+  }
+
   private static Object getRestrictedFieldValue(Field field, Object obj)
       throws NoSuchMethodException {
-    for (Method m : getMethods(field, obj, "get")) {
+    for (Method m : getMethods(field, obj, MethodPrefix.GET)) {
       try {
-        return m.invoke(obj);
+        Object result = m.invoke(obj);
+        if (result != null && List.class.isAssignableFrom(field.getType())) {
+          return newArrayList(result);
+        }
+        return result;
       } catch (Exception e) {
         // continue trying other methods
       }
@@ -288,12 +298,21 @@ public class FieldInfo {
 
   private static Object setRestrictedFieldValue(Field field, Object obj, Object value)
       throws NoSuchMethodException {
-    for (Method m : getMethods(field, obj, "set")) {
+    for (Method m : getMethods(field, obj, MethodPrefix.SET)) {
       try {
         if (value instanceof Collection && ((Collection) value).size() == 0 &&
             m.getParameterTypes().length == 1 &&
             !Collection.class.isAssignableFrom(m.getParameterTypes()[0])) {
           return m.invoke(obj, new Object[]{null});
+        } else if (value instanceof Collection && ((Collection) value).size() == 1 &&
+            m.getParameterTypes().length == 1 &&
+            !Collection.class.isAssignableFrom(m.getParameterTypes()[0])) {
+          Object colValue = ((Collection) value).iterator().next();
+          return m.invoke(obj, colValue);
+        } else if (value != null && !(value instanceof Collection) &&
+            m.getParameterTypes().length == 1 &&
+            List.class.isAssignableFrom(m.getParameterTypes()[0])) {
+          return m.invoke(obj, newArrayList(value));
         } else {
           return m.invoke(obj, value);
         }
@@ -304,14 +323,28 @@ public class FieldInfo {
     throw new NoSuchMethodException();
   }
 
-  private static List<Method> getMethods(Field field, Object obj, String prefix) {
-    List<Method> methods = new ArrayList<Method>();
-    String methodName = prefix + field.getName();
-    for (Method method : obj.getClass().getMethods()) {
-      if (method.getName().compareToIgnoreCase(methodName) == 0) {
-        methods.add(method);
+  private enum MethodPrefix {
+    GET, SET
+  }
+
+  private final Map<MethodPrefix, List<Method>> methodCache = new WeakHashMap<MethodPrefix,
+      List<Method>>();
+
+  private static List<Method> getMethods(Field field, Object obj, MethodPrefix prefix) {
+    synchronized (CACHE) {
+      FieldInfo fieldInfo = FieldInfo.of(field);
+      List<Method> methods = fieldInfo.methodCache.get(prefix);
+      if (methods == null) {
+        methods = new ArrayList<Method>();
+        String methodName = prefix + field.getName();
+        for (Method method : obj.getClass().getMethods()) {
+          if (method.getName().compareToIgnoreCase(methodName) == 0) {
+            methods.add(method);
+          }
+        }
+        fieldInfo.methodCache.put(prefix, methods);
       }
+      return methods;
     }
-    return methods;
   }
 }
