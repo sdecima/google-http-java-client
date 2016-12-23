@@ -14,12 +14,13 @@
 
 package com.google.api.client.util;
 
+import com.google.api.client.http.HttpHeaders;
+
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.WeakHashMap;
@@ -107,7 +108,11 @@ public class FieldInfo {
         if ("##default".equals(fieldName)) {
           fieldName = field.getName();
         }
-        fieldInfo = new FieldInfo(field, fieldName);
+        if (!field.isAccessible() && field.getDeclaringClass() == HttpHeaders.class) {
+          fieldInfo = new HttpHeadersFieldInfo(field, fieldName);
+        } else {
+          fieldInfo = new FieldInfo(field, fieldName);
+        }
         CACHE.put(field, fieldInfo);
       }
       return fieldInfo;
@@ -229,8 +234,9 @@ public class FieldInfo {
    */
   public static Object getFieldValue(Field field, Object obj) {
     if (!field.isAccessible()) {
+      FieldInfo fieldInfo = FieldInfo.of(field);
       try {
-        return getRestrictedFieldValue(field, obj);
+        return fieldInfo.getRestrictedFieldValue(field, obj);
       } catch (Exception e) {
         // just continue
       }
@@ -257,8 +263,9 @@ public class FieldInfo {
       }
     } else {
       if (!field.isAccessible()) {
+        FieldInfo fieldInfo = FieldInfo.of(field);
         try {
-          setRestrictedFieldValue(field, obj, value);
+          fieldInfo.setRestrictedFieldValue(field, obj, value);
           return;
         } catch (Exception e) {
           // just continue
@@ -274,21 +281,11 @@ public class FieldInfo {
     }
   }
 
-  private static List newArrayList(Object element) {
-    ArrayList<Object> list = new ArrayList<Object>();
-    list.add(element);
-    return list;
-  }
-
-  private static Object getRestrictedFieldValue(Field field, Object obj)
+  protected Object getRestrictedFieldValue(Field field, Object obj)
       throws NoSuchMethodException {
     for (Method m : getMethods(field, obj, MethodPrefix.GET)) {
       try {
-        Object result = m.invoke(obj);
-        if (result != null && List.class.isAssignableFrom(field.getType())) {
-          return newArrayList(result);
-        }
-        return result;
+        return m.invoke(obj);
       } catch (Exception e) {
         // continue trying other methods
       }
@@ -296,26 +293,11 @@ public class FieldInfo {
     throw new NoSuchMethodException();
   }
 
-  private static Object setRestrictedFieldValue(Field field, Object obj, Object value)
+  protected Object setRestrictedFieldValue(Field field, Object obj, Object value)
       throws NoSuchMethodException {
     for (Method m : getMethods(field, obj, MethodPrefix.SET)) {
       try {
-        if (value instanceof Collection && ((Collection) value).size() == 0 &&
-            m.getParameterTypes().length == 1 &&
-            !Collection.class.isAssignableFrom(m.getParameterTypes()[0])) {
-          return m.invoke(obj, new Object[]{null});
-        } else if (value instanceof Collection && ((Collection) value).size() == 1 &&
-            m.getParameterTypes().length == 1 &&
-            !Collection.class.isAssignableFrom(m.getParameterTypes()[0])) {
-          Object colValue = ((Collection) value).iterator().next();
-          return m.invoke(obj, colValue);
-        } else if (value != null && !(value instanceof Collection) &&
-            m.getParameterTypes().length == 1 &&
-            List.class.isAssignableFrom(m.getParameterTypes()[0])) {
-          return m.invoke(obj, newArrayList(value));
-        } else {
-          return m.invoke(obj, value);
-        }
+        return m.invoke(obj, value);
       } catch (Exception e) {
         // continue trying other methods
       }
@@ -323,14 +305,14 @@ public class FieldInfo {
     throw new NoSuchMethodException();
   }
 
-  private enum MethodPrefix {
+  enum MethodPrefix {
     GET, SET
   }
 
   private final Map<MethodPrefix, List<Method>> methodCache = new WeakHashMap<MethodPrefix,
       List<Method>>();
 
-  private static List<Method> getMethods(Field field, Object obj, MethodPrefix prefix) {
+  protected static List<Method> getMethods(Field field, Object obj, MethodPrefix prefix) {
     synchronized (CACHE) {
       FieldInfo fieldInfo = FieldInfo.of(field);
       List<Method> methods = fieldInfo.methodCache.get(prefix);
@@ -339,6 +321,20 @@ public class FieldInfo {
         String methodName = prefix + field.getName();
         for (Method method : obj.getClass().getMethods()) {
           if (method.getName().compareToIgnoreCase(methodName) == 0) {
+
+            Class<?> returnType = method.getReturnType();
+            Class<?>[] parameterTypes = method.getParameterTypes();
+            if (
+                (prefix == MethodPrefix.GET && returnType.equals(field.getType()))
+                ||
+                (prefix == MethodPrefix.SET && parameterTypes.length == 1 &&
+                    parameterTypes[0] == field.getType())
+                ) {
+              methods.clear();
+              methods.add(method);
+              break;
+            }
+
             methods.add(method);
           }
         }
